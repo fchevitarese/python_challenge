@@ -3,6 +3,7 @@ import multiprocessing
 import pprint
 import re
 import sys
+import time
 
 import requests
 
@@ -18,7 +19,7 @@ def extract_ip(line):
 
 def perform_http_request(url):
     try:
-        result = requests.get(url)
+        result = requests.get(url, timeout=10)
         if result.status_code == 200:
             return result.json()
     except requests.exceptions.ConnectionError:
@@ -91,22 +92,22 @@ def parse_text_file(filename, close=True):
 def identify_ips(ip_list, geo_process=False, rdap_process=False):
     pool = multiprocessing.Pool()
     for i, ip in enumerate(ip_list):
-        if i < 5:
-            if ip not in geoip_information and geo_process:
-                pool.apply_async(
-                    perform_geo_ip_request,
-                    args=(ip,),
-                    callback=generate_geoip_information,
-                )
-
-            if ip not in rdap_information and rdap_process:
-                pool.apply_async(
-                    perform_rdap_request,
-                    args=(ip,),
-                    callback=generate_rdap_information,
-                )
-        else:
+        if i == 4:
             break
+
+        if ip not in geoip_information and geo_process:
+            pool.apply_async(
+                perform_geo_ip_request,
+                args=(ip,),
+                callback=generate_geoip_information,
+            )
+
+        if ip not in rdap_information and rdap_process:
+            pool.apply_async(
+                perform_rdap_request,
+                args=(ip,),
+                callback=generate_rdap_information,
+            )
 
     pool.close()
     pool.join()
@@ -195,6 +196,14 @@ if __name__ == "__main__":
             identify_ips(
                 ip_list, args.request_geo_data, args.request_rdap_data
             )
+
+            print("**** GEO IP INFORMATION ****")
+            pprint.pprint(geoip_information)
+
+            print("\n\n ****  \n\n")
+
+            print("**** RDAP INFORMATION ****")
+            pprint.pprint(rdap_information)
     else:
         while True:
             runner(args.filename)
