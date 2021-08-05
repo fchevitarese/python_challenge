@@ -1,15 +1,26 @@
 import argparse
+import logging
 import multiprocessing
 import pprint
 import re
 import sys
-import time
 
 import requests
+
+from cache import CachedDict
 
 geoip_information = dict()
 rdap_information = dict()
 ip_list = list()
+
+geo_cache = CachedDict("geoip")
+rdap_cache = CachedDict("rdap")
+
+logging.basicConfig(
+    filename="errors.log", format="%(asctime)s %(message)s", filemode="a+"
+)
+logger = logging.getLogger()
+logger.setLevel(logging.ERROR)
 
 
 def extract_ip(line):
@@ -18,62 +29,65 @@ def extract_ip(line):
 
 
 def perform_http_request(url):
-    try:
-        result = requests.get(url, timeout=10)
-        if result.status_code == 200:
-            return result.json()
-    except requests.exceptions.ConnectionError:
-        return
+    result = requests.get(url, timeout=10)
+    if result.status_code == 200:
+        return result.json()
+    else:
+        logger.error(
+            "Error on getting data on {0} with status {1}".format(
+                url, result.status_code
+            )
+        )
 
 
 def perform_rdap_request(ip_addr):
-    tries = 0
-    max_retries = 3
     print(f"Getting rdap information for ip: {ip_addr}")
     url = f"https://rdap.arin.net/registry/ip/{ip_addr}"
 
-    try:
-        result = perform_http_request(url)
-        if result:
-            return result
-    except requests.exceptions.ConnectionError:
-        if tries <= max_retries:
-            print(f"Error on getting info about : {ip_addr}. Retrying...")
-            tries += 1
-            time.sleep(tries + 1)
+    if not rdap_cache.is_cached(ip_addr):
+        try:
             result = perform_http_request(url)
             if result:
                 return result
-        else:
-            print(
-                f"Max retries reached. Error on getting info about {ip_addr}"
+        except Exception as e:
+            logger.error(e)
+            logger.error(
+                "Error on getting RDAP info for the ip {0}".format(ip_addr)
             )
             return
 
 
 def perform_geo_ip_request(ip_addr):
-    print(f"Getting geo_ip information for ip: {ip_addr}")
-    url = f"https://json.geoiplookup.io/{ip_addr}"
+    if not geo_cache.is_cached(ip_addr):
+        try:
+            print(f"Getting geo_ip information for ip: {ip_addr}")
+            url = f"https://json.geoiplookup.io/{ip_addr}"
 
-    result = perform_http_request(url)
-    return result
+            result = perform_http_request(url)
+            if result and result.get("success"):
+                return result
+
+            raise Exception(result)
+        except Exception as e:
+            logger.error(e)
+            logger.error(
+                "Error on getting GeoIP info for the ip {0}".format(ip_addr)
+            )
 
 
 def generate_geoip_information(result):
-    ip = result["ip"]
-    geoip_information[ip] = result
+    for data in result:
+        if data:
+            ip = data.get("ip")
+            geo_cache.do_cache(ip, data)
 
 
 def generate_rdap_information(result):
-    try:
-        if not result:
-            raise IndexError
-
-        ip = result.get("links")[0]
-        ip = extract_ip(ip.get("value"))[0]
-        rdap_information[ip] = result
-    except IndexError:
-        print("Error on finding the ip address.")
+    for data in result:
+        if data:
+            ip = data.get("links")[0]
+            ip = extract_ip(ip.get("value"))[0]
+            rdap_cache.do_cache(ip, data)
 
 
 def parse_text_file(filename, close=True):
@@ -91,26 +105,14 @@ def parse_text_file(filename, close=True):
 
 def identify_ips(ip_list, geo_process=False, rdap_process=False):
     pool = multiprocessing.Pool()
-    for i, ip in enumerate(ip_list):
-        if i == 4:
-            break
 
-        if ip not in geoip_information and geo_process:
-            pool.apply_async(
-                perform_geo_ip_request,
-                args=(ip,),
-                callback=generate_geoip_information,
-            )
+    if geo_process:
+        geo_information = pool.map(perform_geo_ip_request, ip_list)
+        generate_geoip_information(geo_information)
 
-        if ip not in rdap_information and rdap_process:
-            pool.apply_async(
-                perform_rdap_request,
-                args=(ip,),
-                callback=generate_rdap_information,
-            )
-
-    pool.close()
-    pool.join()
+    if rdap_process:
+        rdap_information = pool.map(perform_rdap_request, ip_list)
+        generate_rdap_information(rdap_information)
 
 
 def runner(filename):
@@ -186,24 +188,47 @@ if __name__ == "__main__":
         dest="interactive",
         help="Want to go interactive :)",
     )
+    parser.add_argument(
+        "-q",
+        dest="max_ips",
+        help="Max ip's that should be identified",
+        type=int,
+    )
+    parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        default=False,
+        help="Ignore cached results",
+    )
 
     args = parser.parse_args()
-
     if not args.interactive:
         ip_list = parse_text_file(args.filename)
-
         if ip_list:
+            if args.force:
+                if args.request_geo_data:
+                    geo_cache.clear_cache()
+
+                if args.request_rdap_data:
+                    rdap_cache.clear_cache()
+
             identify_ips(
-                ip_list, args.request_geo_data, args.request_rdap_data
+                ip_list[: args.max_ips],
+                geo_process=args.request_geo_data,
+                rdap_process=args.request_rdap_data,
             )
 
-            print("**** GEO IP INFORMATION ****")
-            pprint.pprint(geoip_information)
+            if args.request_geo_data:
+                geoip_information.update(geo_cache.cache)
+                print("**** GEO IP INFORMATION ****")
+                pprint.pprint(geoip_information)
+                print("\n\n ****  \n\n")
 
-            print("\n\n ****  \n\n")
-
-            print("**** RDAP INFORMATION ****")
-            pprint.pprint(rdap_information)
+            if args.request_rdap_data:
+                rdap_information.update(rdap_cache.cache)
+                print("**** RDAP INFORMATION ****")
+                pprint.pprint(rdap_information)
     else:
         while True:
             runner(args.filename)
