@@ -13,7 +13,7 @@ class CachedDict(object):
             with open(f"cached_{self.method}.json", "r") as f_cache:
                 cache = json.loads(str(f_cache.read()))
             f_cache.close()
-        except FileNotFoundError:
+        except (FileNotFoundError, json.decoder.JSONDecodeError):
             with open(f"cached_{self.method}.json", "w+") as f_cache:
                 f_cache.write(json.dumps({}))
             f_cache.close()

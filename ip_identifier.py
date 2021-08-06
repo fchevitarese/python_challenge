@@ -147,14 +147,18 @@ def runner(filename):
         print(f"{len(ip_list)} ip's were found in the file.")
 
     elif command == "g" or command == "geoip":
-        print("Performing Geo ip requests for the list of ip's")
-        identify_ips(ip_list, geo_process=True)
-        pprint.pprint(geoip_information)
+        print(
+            "Performing Geo ip requests for the list of ip's. Limited to 10 results."
+        )
+        identify_ips(ip_list[:10], geo_process=True)
+        pprint.pprint(geo_cache.cache)
 
     elif command == "r" or command == "rdap":
-        print("Performin RDAP request for the list of ip's")
-        identify_ips(ip_list, rdap_process=True)
-        pprint.pprint(rdap_information)
+        print(
+            "Performin RDAP request for the list of ip's. Limited to 10 results."
+        )
+        identify_ips(ip_list[:10], rdap_process=True)
+        pprint.pprint(rdap_cache.cache)
 
 
 if __name__ == "__main__":
